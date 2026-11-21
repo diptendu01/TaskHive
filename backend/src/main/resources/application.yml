@@ -1,0 +1,95 @@
+spring:
+  application:
+    name: taskhive-backend
+  profiles:
+    active: dev
+  jpa:
+    open-in-view: false
+  data:
+    redis:
+      repositories:
+        enabled: false
+
+server:
+  port: ${PORT:8080}
+  error:
+    include-message: never
+    include-exception: false
+    include-stacktrace: never
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
+
+---
+spring:
+  config:
+    activate:
+      on-profile: dev
+  datasource:
+    url: ${SPRING_DATASOURCE_URL:jdbc:h2:mem:taskhive;DB_CLOSE_DELAY=-1;MODE=PostgreSQL}
+    username: ${SPRING_DATASOURCE_USERNAME:sa}
+    password: ${SPRING_DATASOURCE_PASSWORD:}
+  jpa:
+    hibernate:
+      ddl-auto: update
+    show-sql: true
+  data:
+    redis:
+      host: ${SPRING_REDIS_HOST:localhost}
+      port: ${SPRING_REDIS_PORT:6379}
+      password: ${SPRING_REDIS_PASSWORD:}
+
+server:
+  error:
+    include-message: always
+
+logging:
+  level:
+    com.taskhive.backend: DEBUG
+
+jwt:
+  secret: ${JWT_SECRET:dev-secret-key-for-taskhive-development-only-minimum-32-chars}
+  expiration-ms: ${JWT_EXPIRATION:86400000}
+
+app:
+  env: dev
+  frontend-url: ${FRONTEND_URL:http://localhost:5173}
+
+---
+spring:
+  config:
+    activate:
+      on-profile: prod
+  datasource:
+    url: ${SPRING_DATASOURCE_URL}
+    username: ${SPRING_DATASOURCE_USERNAME}
+    password: ${SPRING_DATASOURCE_PASSWORD}
+  jpa:
+    hibernate:
+      ddl-auto: ${SPRING_JPA_HIBERNATE_DDL_AUTO:update}
+  data:
+    redis:
+      host: ${SPRING_REDIS_HOST:redis}
+      port: ${SPRING_REDIS_PORT:6379}
+      password: ${SPRING_REDIS_PASSWORD:}
+
+logging:
+  level:
+    com.taskhive.backend: INFO
+
+springdoc:
+  api-docs:
+    enabled: false
+  swagger-ui:
+    enabled: false
+
+jwt:
+  secret: ${JWT_SECRET}
+  expiration-ms: ${JWT_EXPIRATION:86400000}
+
+app:
+  env: prod
+  frontend-url: ${FRONTEND_URL:http://localhost:5173}

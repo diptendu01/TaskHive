@@ -1,0 +1,12 @@
+package com.taskhive.backend.repository;
+
+import com.taskhive.backend.security.WorkspaceMember;
+import org.springframework.data.jpa.repository.JpaRepository;
+
+import java.util.List;
+import java.util.UUID;
+
+public interface WorkspaceMemberRepository extends JpaRepository<WorkspaceMember, UUID> {
+    List<WorkspaceMember> findByUserId(UUID userId);
+    boolean existsByWorkspaceIdAndUserId(UUID workspaceId, UUID userId);
+}

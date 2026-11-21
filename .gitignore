@@ -1,0 +1,21 @@
+# Frontend
+node_modules/
+frontend/dist/
+.vite/
+
+# Backend
+backend/target/
+*.jar
+
+# Secrets & local env
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+
+# IDE & OS
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
