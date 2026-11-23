@@ -4,6 +4,7 @@ import com.taskhive.backend.repository.BoardRepository;
 import com.taskhive.backend.repository.WorkspaceMemberRepository;
 import com.taskhive.backend.security.Board;
 import com.taskhive.backend.security.JwtService;
+import com.taskhive.backend.service.WebSocketSessionRegistry;
 import io.jsonwebtoken.Claims;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Configuration;
@@ -19,9 +20,14 @@ import org.springframework.messaging.support.MessageHeaderAccessor;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.core.authority.SimpleGrantedAuthority;
+import org.springframework.web.socket.CloseStatus;
+import org.springframework.web.socket.WebSocketHandler;
+import org.springframework.web.socket.WebSocketSession;
 import org.springframework.web.socket.config.annotation.EnableWebSocketMessageBroker;
 import org.springframework.web.socket.config.annotation.StompEndpointRegistry;
 import org.springframework.web.socket.config.annotation.WebSocketMessageBrokerConfigurer;
+import org.springframework.web.socket.config.annotation.WebSocketTransportRegistration;
+import org.springframework.web.socket.handler.WebSocketHandlerDecorator;
 
 import java.security.Principal;
 import java.time.Instant;
@@ -40,6 +46,7 @@ public class WebSocketConfig implements WebSocketMessageBrokerConfigurer {
     private final JwtService jwtService;
     private final BoardRepository boardRepository;
     private final WorkspaceMemberRepository workspaceMemberRepository;
+    private final WebSocketSessionRegistry sessionRegistry;
     private final String frontendUrl;
     private final String appEnv;
 
@@ -47,12 +54,14 @@ public class WebSocketConfig implements WebSocketMessageBrokerConfigurer {
             JwtService jwtService,
             BoardRepository boardRepository,
             WorkspaceMemberRepository workspaceMemberRepository,
+            WebSocketSessionRegistry sessionRegistry,
             @Value("${app.frontend-url:http://localhost:5173}") String frontendUrl,
             @Value("${app.env:dev}") String appEnv
     ) {
         this.jwtService = jwtService;
         this.boardRepository = boardRepository;
         this.workspaceMemberRepository = workspaceMemberRepository;
+        this.sessionRegistry = sessionRegistry;
         this.frontendUrl = frontendUrl;
         this.appEnv = appEnv;
     }
@@ -72,6 +81,23 @@ public class WebSocketConfig implements WebSocketMessageBrokerConfigurer {
 
         registry.addEndpoint("/ws")
                 .setAllowedOriginPatterns(allowedOrigins);
+    }
+
+    @Override
+    public void configureWebSocketTransport(WebSocketTransportRegistration registry) {
+        registry.addDecoratorFactory(handler -> new WebSocketHandlerDecorator(handler) {
+            @Override
+            public void afterConnectionEstablished(WebSocketSession session) throws Exception {
+                sessionRegistry.registerTransportSession(session);
+                super.afterConnectionEstablished(session);
+            }
+
+            @Override
+            public void afterConnectionClosed(WebSocketSession session, CloseStatus closeStatus) throws Exception {
+                sessionRegistry.unregisterTransportSession(session);
+                super.afterConnectionClosed(session, closeStatus);
+            }
+        });
     }
 
     @Override
@@ -110,6 +136,7 @@ public class WebSocketConfig implements WebSocketMessageBrokerConfigurer {
                     Authentication auth =
                             new UsernamePasswordAuthenticationToken(userId, null, authorities);
                     accessor.setUser(auth);
+                    sessionRegistry.bindUser(accessor.getSessionId(), userId);
 
                     Date expiration = claims.getExpiration();
                     Map<String, Object> sessionAttrs = accessor.getSessionAttributes();

@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Link, useParams } from 'react-router-dom';
+import { Link, useNavigate, useParams } from 'react-router-dom';
 import {
   DndContext,
   DragOverlay,
@@ -40,6 +40,7 @@ function resolveWsUrl() {
 const BoardPage = () => {
   const { user, token, logout } = useAuth();
   const { boardId } = useParams();
+  const navigate = useNavigate();
 
   const [boardName, setBoardName] = useState('');
   const [boardColor, setBoardColor] = useState('#14b8a6');
@@ -59,6 +60,7 @@ const BoardPage = () => {
 
   const stompClientRef = useRef(null);
   const lastCardsSnapshotRef = useRef(null);
+  const hasConnectedOnceRef = useRef(false);
 
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
@@ -102,6 +104,21 @@ const BoardPage = () => {
       onConnect: () => {
         if (cancelled) return;
         setWsStatus('connected');
+        if (hasConnectedOnceRef.current) {
+          api
+            .getBoard(token, boardId, { onUnauthorized: logout })
+            .then((data) => {
+              if (!cancelled && data) {
+                setBoardName(data.name || '');
+                setBoardColor(data.avatarColor || '#14b8a6');
+                setWorkspaceId(data.workspaceId || null);
+                setLists(data.lists || []);
+                setCards(data.cards || []);
+              }
+            })
+            .catch(() => {});
+        }
+        hasConnectedOnceRef.current = true;
 
         client.subscribe('/user/queue/errors', (msg) => {
           if (msg?.type === 'card:move:error') {
@@ -154,6 +171,8 @@ const BoardPage = () => {
           } else if (type === 'board:updated' && data?.board) {
             setBoardName(data.board.name || '');
             if (data.board.avatarColor) setBoardColor(data.board.avatarColor);
+          } else if (type === 'board:deleted') {
+            navigate('/', { replace: true });
           }
         });
       },
@@ -177,7 +196,7 @@ const BoardPage = () => {
       client.disconnect();
       stompClientRef.current = null;
     };
-  }, [token, boardId, logout]);
+  }, [token, boardId, logout, navigate]);
 
   const sortedLists = useMemo(
     () => lists.slice().sort((a, b) => a.position - b.position),

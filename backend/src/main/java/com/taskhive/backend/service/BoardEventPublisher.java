@@ -3,6 +3,7 @@ package com.taskhive.backend.service;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.messaging.simp.SimpMessagingTemplate;
 import org.springframework.stereotype.Service;
@@ -16,7 +17,7 @@ import java.util.UUID;
 /**
  * Publishes board real-time events strictly AFTER transaction commit so connected
  * clients never observe uncommitted state. Routes messages through Redis Pub/Sub
- * for multi-instance fan-out, with automatic local STOMP fallback if Redis is down.
+ * when app.redis.pubsub.enabled=true, otherwise delivers directly via STOMP.
  */
 @Service
 public class BoardEventPublisher {
@@ -27,15 +28,18 @@ public class BoardEventPublisher {
     private final SimpMessagingTemplate messagingTemplate;
     private final ObjectMapper objectMapper;
     private final StringRedisTemplate redisTemplate;
+    private final boolean pubsubEnabled;
 
     public BoardEventPublisher(
             SimpMessagingTemplate messagingTemplate,
             ObjectMapper objectMapper,
-            @Autowired(required = false) StringRedisTemplate redisTemplate
+            @Autowired(required = false) StringRedisTemplate redisTemplate,
+            @Value("${app.redis.pubsub.enabled:false}") boolean pubsubEnabled
     ) {
         this.messagingTemplate = messagingTemplate;
         this.objectMapper = objectMapper;
         this.redisTemplate = redisTemplate;
+        this.pubsubEnabled = pubsubEnabled;
     }
 
     public void publishAfterCommit(UUID boardId, String type, Object data) {
@@ -55,7 +59,7 @@ public class BoardEventPublisher {
     }
 
     private void dispatch(UUID boardId, Map<String, Object> payload) {
-        if (redisTemplate != null) {
+        if (pubsubEnabled && redisTemplate != null) {
             try {
                 String envelope = objectMapper.writeValueAsString(
                         Map.of("boardId", boardId.toString(), "payload", payload)

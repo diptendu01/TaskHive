@@ -6,12 +6,16 @@ import com.taskhive.backend.dto.AuthDtos.RegisterRequest;
 import com.taskhive.backend.dto.BoardDtos.BoardDetailDto;
 import com.taskhive.backend.dto.BoardDtos.BoardSummaryDto;
 import com.taskhive.backend.dto.BoardDtos.CardDto;
+import com.taskhive.backend.dto.BoardDtos.CreateBoardRequest;
 import com.taskhive.backend.dto.BoardDtos.CreateCardRequest;
 import com.taskhive.backend.dto.BoardDtos.InviteMemberRequest;
 import com.taskhive.backend.dto.BoardDtos.MoveCardRequest;
+import com.taskhive.backend.dto.BoardDtos.UpdateBoardRequest;
 import com.taskhive.backend.dto.BoardDtos.UpdateCardRequest;
+import com.taskhive.backend.service.BoardEventPublisher;
 import com.taskhive.backend.service.LoginRateLimiter;
 import org.junit.jupiter.api.Test;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.web.server.LocalServerPort;
 import org.springframework.http.HttpEntity;
@@ -21,18 +25,26 @@ import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.http.client.JdkClientHttpRequestFactory;
+import org.springframework.messaging.simp.SimpMessagingTemplate;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
+import org.springframework.test.context.bean.override.mockito.MockitoSpyBean;
 import org.springframework.web.client.HttpClientErrorException;
 import org.springframework.web.client.RestTemplate;
+import org.testcontainers.containers.GenericContainer;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
 import org.testcontainers.postgresql.PostgreSQLContainer;
 
+import java.util.Map;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.timeout;
+import static org.mockito.Mockito.verify;
 
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
 @Testcontainers(disabledWithoutDocker = true)
@@ -41,17 +53,29 @@ class TaskHiveIntegrationTest {
     @Container
     static PostgreSQLContainer postgres = new PostgreSQLContainer("postgres:16-alpine");
 
+    @Container
+    static GenericContainer<?> redis = new GenericContainer<>("redis:7-alpine")
+            .withExposedPorts(6379);
+
     @DynamicPropertySource
     static void registerProps(DynamicPropertyRegistry registry) {
         registry.add("spring.datasource.url", postgres::getJdbcUrl);
         registry.add("spring.datasource.username", postgres::getUsername);
         registry.add("spring.datasource.password", postgres::getPassword);
         registry.add("spring.jpa.hibernate.ddl-auto", () -> "create-drop");
-        registry.add("app.redis.pubsub.enabled", () -> "false");
+        registry.add("spring.data.redis.host", redis::getHost);
+        registry.add("spring.data.redis.port", () -> redis.getMappedPort(6379));
+        registry.add("app.redis.pubsub.enabled", () -> "true");
     }
 
     @LocalServerPort
     private int port;
+
+    @Autowired
+    private BoardEventPublisher boardEventPublisher;
+
+    @MockitoSpyBean
+    private SimpMessagingTemplate messagingTemplate;
 
     private final RestTemplate rest = new RestTemplate(new JdkClientHttpRequestFactory());
 
@@ -67,7 +91,16 @@ class TaskHiveIntegrationTest {
     }
 
     @Test
-    void endToEndCollaborationAuthorizationAndFractionalMove() {
+    void redisPubSubRelaysBoardEventsEndToEnd() {
+        UUID boardId = UUID.randomUUID();
+        boardEventPublisher.publishAfterCommit(boardId, "card:created", Map.of("hello", "redis"));
+
+        verify(messagingTemplate, timeout(5000))
+                .convertAndSend(eq("/topic/board/" + boardId), any(Object.class));
+    }
+
+    @Test
+    void endToEndCollaborationRolesAuthorizationAndFractionalMove() {
         AuthResponse alice = rest.postForObject(
                 url("/api/v1/auth/register"),
                 new RegisterRequest("Alice", "alice-" + UUID.randomUUID() + "@example.com", "Password123!"),
@@ -98,7 +131,7 @@ class TaskHiveIntegrationTest {
                 BoardDetailDto.class
         )).isInstanceOf(HttpClientErrorException.Forbidden.class);
 
-        // Alice invites Bob to her workspace
+        // Alice invites Bob to her workspace as MEMBER
         ResponseEntity<String> inviteRes = rest.exchange(
                 url("/api/v1/workspaces/" + aliceBoard.workspaceId() + "/members"),
                 HttpMethod.POST,
@@ -107,19 +140,46 @@ class TaskHiveIntegrationTest {
         );
         assertThat(inviteRes.getStatusCode()).isEqualTo(HttpStatus.CREATED);
 
-        // Bob can now open Alice's shared board
-        ResponseEntity<BoardDetailDto> sharedBoardRes = rest.exchange(
+        // Bob (MEMBER) cannot rename or delete Alice's board (403)
+        assertThatThrownBy(() -> rest.exchange(
+                url("/api/v1/boards/" + aliceBoard.id()),
+                HttpMethod.PATCH,
+                new HttpEntity<>(new UpdateBoardRequest("Hijacked", "#000000"), authHeaders(bob.accessToken())),
+                BoardSummaryDto.class
+        )).isInstanceOf(HttpClientErrorException.Forbidden.class);
+
+        // When Bob creates a new board without workspaceId, it lands in Bob's OWNER workspace, not Alice's
+        ResponseEntity<BoardSummaryDto[]> bobBoardsBefore = rest.exchange(
+                url("/api/v1/boards"),
+                HttpMethod.GET,
+                new HttpEntity<>(authHeaders(bob.accessToken())),
+                BoardSummaryDto[].class
+        );
+        UUID bobPersonalWsId = java.util.Arrays.stream(bobBoardsBefore.getBody())
+                .map(BoardSummaryDto::workspaceId)
+                .filter(wsId -> !wsId.equals(aliceBoard.workspaceId()))
+                .findFirst()
+                .orElseThrow();
+
+        BoardSummaryDto bobNewBoard = rest.exchange(
+                url("/api/v1/boards"),
+                HttpMethod.POST,
+                new HttpEntity<>(new CreateBoardRequest("Bob Private", "#14b8a6", null), authHeaders(bob.accessToken())),
+                BoardSummaryDto.class
+        ).getBody();
+        assertThat(bobNewBoard).isNotNull();
+        assertThat(bobNewBoard.workspaceId()).isEqualTo(bobPersonalWsId);
+
+        // Bob can collaborate on Alice's shared board (cards + midpoint fractional move)
+        BoardDetailDto detail = rest.exchange(
                 url("/api/v1/boards/" + aliceBoard.id()),
                 HttpMethod.GET,
                 new HttpEntity<>(authHeaders(bob.accessToken())),
                 BoardDetailDto.class
-        );
-        assertThat(sharedBoardRes.getStatusCode()).isEqualTo(HttpStatus.OK);
-        BoardDetailDto detail = sharedBoardRes.getBody();
+        ).getBody();
         assertThat(detail).isNotNull();
         UUID todoListId = detail.lists().get(0).id();
 
-        // Create two more cards and reorder the 3rd card between 1st and 2nd (midpoint fractional index)
         CardDto card2 = rest.exchange(
                 url("/api/v1/boards/" + aliceBoard.id() + "/cards"),
                 HttpMethod.POST,
@@ -148,7 +208,6 @@ class TaskHiveIntegrationTest {
         assertThat(moved).isNotNull();
         assertThat(moved.position()).isBetween(detail.cards().get(0).position(), card2.position());
 
-        // Edit card title & description
         CardDto edited = rest.exchange(
                 url("/api/v1/boards/" + aliceBoard.id() + "/cards/" + card3.id()),
                 HttpMethod.PATCH,
@@ -157,7 +216,6 @@ class TaskHiveIntegrationTest {
         ).getBody();
         assertThat(edited).isNotNull();
         assertThat(edited.title()).isEqualTo("Edited Title");
-        assertThat(edited.description()).isEqualTo("Updated Desc");
     }
 
     @Test

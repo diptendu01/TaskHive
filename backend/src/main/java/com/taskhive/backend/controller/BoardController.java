@@ -26,6 +26,7 @@ import com.taskhive.backend.security.User;
 import com.taskhive.backend.security.Workspace;
 import com.taskhive.backend.security.WorkspaceMember;
 import com.taskhive.backend.service.BoardEventPublisher;
+import com.taskhive.backend.service.CardMoveService;
 import com.taskhive.backend.service.FractionalIndexService;
 import com.taskhive.backend.service.FractionalIndexService.PositionResult;
 import jakarta.validation.Valid;
@@ -59,6 +60,7 @@ public class BoardController {
     private final UserRepository userRepository;
     private final FractionalIndexService fractionalIndexService;
     private final BoardEventPublisher boardEventPublisher;
+    private final CardMoveService cardMoveService;
 
     public BoardController(
             BoardRepository boardRepository,
@@ -68,7 +70,8 @@ public class BoardController {
             WorkspaceMemberRepository workspaceMemberRepository,
             UserRepository userRepository,
             FractionalIndexService fractionalIndexService,
-            BoardEventPublisher boardEventPublisher
+            BoardEventPublisher boardEventPublisher,
+            CardMoveService cardMoveService
     ) {
         this.boardRepository = boardRepository;
         this.taskListRepository = taskListRepository;
@@ -78,6 +81,7 @@ public class BoardController {
         this.userRepository = userRepository;
         this.fractionalIndexService = fractionalIndexService;
         this.boardEventPublisher = boardEventPublisher;
+        this.cardMoveService = cardMoveService;
     }
 
     @GetMapping
@@ -106,11 +110,7 @@ public class BoardController {
             Authentication authentication
     ) {
         UUID userId = requireUserId(authentication);
-        Workspace workspace = workspaceMemberRepository.findByUserId(userId)
-                .stream()
-                .findFirst()
-                .map(WorkspaceMember::getWorkspace)
-                .orElseGet(() -> createDefaultWorkspace(userId));
+        Workspace workspace = resolveTargetWorkspace(userId, request.workspaceId());
 
         Board board = new Board();
         board.setName(request.name().trim());
@@ -161,7 +161,7 @@ public class BoardController {
             Authentication authentication
     ) {
         UUID userId = requireUserId(authentication);
-        Board board = requireAuthorizedBoard(boardId, userId);
+        Board board = requireBoardAdmin(boardId, userId);
         board.setName(request.name().trim());
         if (request.avatarColor() != null && !request.avatarColor().isBlank()) {
             board.setAvatarColor(request.avatarColor().trim());
@@ -179,8 +179,9 @@ public class BoardController {
             Authentication authentication
     ) {
         UUID userId = requireUserId(authentication);
-        Board board = requireAuthorizedBoard(boardId, userId);
+        Board board = requireBoardAdmin(boardId, userId);
         boardRepository.delete(board);
+        boardEventPublisher.publishAfterCommit(boardId, "board:deleted", Map.of("boardId", boardId));
         return ResponseEntity.noContent().build();
     }
 
@@ -274,7 +275,7 @@ public class BoardController {
             Authentication authentication
     ) {
         UUID userId = requireUserId(authentication);
-        requireAuthorizedBoard(boardId, userId);
+        requireBoardAdmin(boardId, userId);
 
         TaskList list = taskListRepository.findById(listId)
                 .filter(l -> boardId.equals(l.getBoardId()))
@@ -338,7 +339,6 @@ public class BoardController {
     }
 
     @PatchMapping("/{boardId}/cards/{cardId}/move")
-    @Transactional
     public CardDto moveCard(
             @PathVariable UUID boardId,
             @PathVariable UUID cardId,
@@ -346,47 +346,14 @@ public class BoardController {
             Authentication authentication
     ) {
         UUID userId = requireUserId(authentication);
-        requireAuthorizedBoard(boardId, userId);
-
-        Card card = requireCardOnBoard(cardId, boardId);
-        TaskList targetList = taskListRepository.findById(request.newListId())
-                .filter(l -> boardId.equals(l.getBoardId()))
-                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Target list not found"));
-
-        List<Card> targetCards = cardRepository.findByListIdOrderByPositionAsc(targetList.getId());
-        card.setList(targetList);
-
-        PositionResult<Card> result = fractionalIndexService.computePosition(
-                targetCards,
-                card,
-                request.beforeCardId(),
-                request.afterCardId(),
+        MoveCardRequest normalized = new MoveCardRequest(
+                cardId,
+                request.newListId(),
                 request.newPosition(),
-                Card::getId,
-                Card::getPosition,
-                Card::setPosition
+                request.beforeCardId(),
+                request.afterCardId()
         );
-
-        if (result.rebalanced()) {
-            cardRepository.saveAll(result.orderedItems());
-            List<CardDto> rebalancedDtos = result.orderedItems().stream().map(this::toCardDto).toList();
-            boardEventPublisher.publishAfterCommit(
-                    boardId,
-                    "cards:rebalanced",
-                    Map.of("listId", targetList.getId(), "cards", rebalancedDtos)
-            );
-        } else {
-            card = cardRepository.save(card);
-            CardDto dto = toCardDto(card);
-            boardEventPublisher.publishAfterCommit(
-                    boardId,
-                    "card:moved",
-                    Map.of("cardId", card.getId(), "newCard", dto)
-            );
-            return dto;
-        }
-
-        return toCardDto(card);
+        return cardMoveService.moveCard(boardId, normalized, userId);
     }
 
     @DeleteMapping("/{boardId}/cards/{cardId}")
@@ -403,6 +370,20 @@ public class BoardController {
         cardRepository.delete(card);
         boardEventPublisher.publishAfterCommit(boardId, "card:deleted", Map.of("cardId", cardId));
         return ResponseEntity.noContent().build();
+    }
+
+    private Workspace resolveTargetWorkspace(UUID userId, UUID requestedWorkspaceId) {
+        if (requestedWorkspaceId != null) {
+            WorkspaceMember membership = workspaceMemberRepository
+                    .findByWorkspaceIdAndUserId(requestedWorkspaceId, userId)
+                    .orElseThrow(() -> new ResponseStatusException(HttpStatus.FORBIDDEN, "You do not have access to this workspace"));
+            return membership.getWorkspace();
+        }
+        return workspaceMemberRepository.findByUserIdAndRoleOrderByCreatedAtAsc(userId, Role.OWNER)
+                .stream()
+                .findFirst()
+                .map(WorkspaceMember::getWorkspace)
+                .orElseGet(() -> createDefaultWorkspace(userId));
     }
 
     private Card requireCardOnBoard(UUID cardId, UUID boardId) {
@@ -432,6 +413,18 @@ public class BoardController {
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Board not found"));
         if (!workspaceMemberRepository.existsByWorkspaceIdAndUserId(board.getWorkspaceId(), userId)) {
             throw new ResponseStatusException(HttpStatus.FORBIDDEN, "You do not have access to this board");
+        }
+        return board;
+    }
+
+    private Board requireBoardAdmin(UUID boardId, UUID userId) {
+        Board board = boardRepository.findById(boardId)
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Board not found"));
+        WorkspaceMember membership = workspaceMemberRepository
+                .findByWorkspaceIdAndUserId(board.getWorkspaceId(), userId)
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.FORBIDDEN, "You do not have access to this board"));
+        if (membership.getRole() != Role.OWNER && membership.getRole() != Role.ADMIN) {
+            throw new ResponseStatusException(HttpStatus.FORBIDDEN, "Only workspace owners or admins can perform this action");
         }
         return board;
     }

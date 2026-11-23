@@ -61,7 +61,8 @@ public final class BoardDtos {
 
     public record CreateBoardRequest(
             @NotBlank @Size(max = 120) String name,
-            @Size(max = 64) String avatarColor
+            @Size(max = 64) String avatarColor,
+            UUID workspaceId
     ) {
     }
 

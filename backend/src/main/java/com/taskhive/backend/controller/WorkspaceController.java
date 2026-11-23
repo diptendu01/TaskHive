@@ -9,6 +9,7 @@ import com.taskhive.backend.security.Role;
 import com.taskhive.backend.security.User;
 import com.taskhive.backend.security.Workspace;
 import com.taskhive.backend.security.WorkspaceMember;
+import com.taskhive.backend.service.WebSocketSessionRegistry;
 import jakarta.validation.Valid;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
@@ -34,15 +35,18 @@ public class WorkspaceController {
     private final WorkspaceRepository workspaceRepository;
     private final WorkspaceMemberRepository workspaceMemberRepository;
     private final UserRepository userRepository;
+    private final WebSocketSessionRegistry sessionRegistry;
 
     public WorkspaceController(
             WorkspaceRepository workspaceRepository,
             WorkspaceMemberRepository workspaceMemberRepository,
-            UserRepository userRepository
+            UserRepository userRepository,
+            WebSocketSessionRegistry sessionRegistry
     ) {
         this.workspaceRepository = workspaceRepository;
         this.workspaceMemberRepository = workspaceMemberRepository;
         this.userRepository = userRepository;
+        this.sessionRegistry = sessionRegistry;
     }
 
     @GetMapping("/{workspaceId}/members")
@@ -82,14 +86,12 @@ public class WorkspaceController {
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Workspace not found"));
 
         String normalizedEmail = request.email().trim().toLowerCase(Locale.ROOT);
-        User invitee = userRepository.findByEmail(normalizedEmail)
-                .orElseThrow(() -> new ResponseStatusException(
-                        HttpStatus.NOT_FOUND,
-                        "No TaskHive account found for " + normalizedEmail + ". Ask them to register first."
-                ));
-
-        if (workspaceMemberRepository.existsByWorkspaceIdAndUserId(workspaceId, invitee.getId())) {
-            throw new ResponseStatusException(HttpStatus.CONFLICT, "This user is already a member of the workspace");
+        User invitee = userRepository.findByEmail(normalizedEmail).orElse(null);
+        if (invitee == null || workspaceMemberRepository.existsByWorkspaceIdAndUserId(workspaceId, invitee.getId())) {
+            throw new ResponseStatusException(
+                    HttpStatus.BAD_REQUEST,
+                    "Unable to invite this user. Please verify the email address and ensure they have a registered account."
+            );
         }
 
         Role targetRole = parseInviteRole(request.role());
@@ -127,7 +129,11 @@ public class WorkspaceController {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Workspace owners cannot remove themselves");
         }
 
+        UUID removedUserId = target.getUserId();
         workspaceMemberRepository.delete(target);
+        if (removedUserId != null) {
+            sessionRegistry.disconnectUser(removedUserId);
+        }
         return ResponseEntity.noContent().build();
     }
 

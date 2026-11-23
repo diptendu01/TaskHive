@@ -3,7 +3,6 @@ package com.taskhive.backend.config;
 import com.taskhive.backend.service.BoardEventPublisher;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -19,16 +18,15 @@ import java.util.Map;
 
 /**
  * Subscribes to Redis Pub/Sub board events and fans them out to local STOMP WebSocket
- * subscribers so multiple backend instances stay in real-time sync.
+ * subscribers when app.redis.pubsub.enabled=true.
  */
 @Configuration
-@ConditionalOnProperty(name = "app.redis.pubsub.enabled", havingValue = "true", matchIfMissing = true)
+@ConditionalOnProperty(name = "app.redis.pubsub.enabled", havingValue = "true")
 public class RedisPubSubConfig {
 
     private static final Logger log = LoggerFactory.getLogger(RedisPubSubConfig.class);
 
     @Bean
-    @ConditionalOnBean(RedisConnectionFactory.class)
     public RedisMessageListenerContainer redisMessageListenerContainer(
             RedisConnectionFactory connectionFactory,
             BoardEventPublisher boardEventPublisher,

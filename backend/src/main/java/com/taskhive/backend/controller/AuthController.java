@@ -131,7 +131,7 @@ public class AuthController {
             HttpServletRequest httpRequest
     ) {
         String normalizedEmail = request.email().trim().toLowerCase(Locale.ROOT);
-        String clientIp = extractClientIp(httpRequest);
+        String clientIp = httpRequest.getRemoteAddr();
         loginRateLimiter.checkAllowed(clientIp, normalizedEmail);
 
         User user = userRepository.findByEmail(normalizedEmail).orElse(null);
@@ -143,14 +143,6 @@ public class AuthController {
         loginRateLimiter.clear(clientIp, normalizedEmail);
         String token = jwtService.generateToken(user);
         return ResponseEntity.ok(new AuthResponse(token, toSummary(user)));
-    }
-
-    private String extractClientIp(HttpServletRequest request) {
-        String forwarded = request.getHeader("X-Forwarded-For");
-        if (forwarded != null && !forwarded.isBlank()) {
-            return forwarded.split(",")[0].trim();
-        }
-        return request.getRemoteAddr();
     }
 
     private TaskList buildList(Board board, String title, double position) {
