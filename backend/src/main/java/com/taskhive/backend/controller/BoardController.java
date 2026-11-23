@@ -109,7 +109,7 @@ public class BoardController {
         Workspace workspace = workspaceMemberRepository.findByUserId(userId)
                 .stream()
                 .findFirst()
-                .map(m -> workspaceRepository.getReferenceById(m.getWorkspaceId()))
+                .map(WorkspaceMember::getWorkspace)
                 .orElseGet(() -> createDefaultWorkspace(userId));
 
         Board board = new Board();
