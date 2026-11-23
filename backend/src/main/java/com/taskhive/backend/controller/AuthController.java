@@ -18,6 +18,9 @@ import com.taskhive.backend.security.TaskList;
 import com.taskhive.backend.security.User;
 import com.taskhive.backend.security.Workspace;
 import com.taskhive.backend.security.WorkspaceMember;
+import com.taskhive.backend.service.FractionalIndexService;
+import com.taskhive.backend.service.LoginRateLimiter;
+import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.Valid;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
@@ -29,6 +32,7 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.server.ResponseStatusException;
 
+import java.util.List;
 import java.util.Locale;
 import java.util.UUID;
 
@@ -44,6 +48,7 @@ public class AuthController {
     private final CardRepository cardRepository;
     private final PasswordEncoder passwordEncoder;
     private final JwtService jwtService;
+    private final LoginRateLimiter loginRateLimiter;
 
     public AuthController(
             UserRepository userRepository,
@@ -53,7 +58,8 @@ public class AuthController {
             TaskListRepository taskListRepository,
             CardRepository cardRepository,
             PasswordEncoder passwordEncoder,
-            JwtService jwtService
+            JwtService jwtService,
+            LoginRateLimiter loginRateLimiter
     ) {
         this.userRepository = userRepository;
         this.workspaceRepository = workspaceRepository;
@@ -63,6 +69,7 @@ public class AuthController {
         this.cardRepository = cardRepository;
         this.passwordEncoder = passwordEncoder;
         this.jwtService = jwtService;
+        this.loginRateLimiter = loginRateLimiter;
     }
 
     @PostMapping("/register")
@@ -81,11 +88,10 @@ public class AuthController {
         user.setGlobalRole(Role.MEMBER);
         user = userRepository.save(user);
 
-        // Create default personal workspace and starter board
         Workspace workspace = new Workspace();
         workspace.setName(user.getName() + "'s Workspace");
         workspace.setSlug("ws-" + UUID.randomUUID().toString().substring(0, 8));
-        workspace.setAvatarColor("#3b82f6");
+        workspace.setAvatarColor("#14b8a6");
         workspace = workspaceRepository.save(workspace);
 
         WorkspaceMember member = new WorkspaceMember();
@@ -98,19 +104,20 @@ public class AuthController {
         Board board = new Board();
         board.setName("Getting Started");
         board.setSlug("getting-started-" + UUID.randomUUID().toString().substring(0, 6));
-        board.setAvatarColor("#2563eb");
+        board.setAvatarColor("#14b8a6");
         board.setWorkspace(workspace);
         board = boardRepository.save(board);
 
-        TaskList todo = createList(board, "To Do", 1000.0);
-        createList(board, "In Progress", 2000.0);
-        createList(board, "Done", 3000.0);
+        TaskList todo = buildList(board, "To Do", FractionalIndexService.DEFAULT_GAP);
+        TaskList inProgress = buildList(board, "In Progress", FractionalIndexService.DEFAULT_GAP * 2);
+        TaskList done = buildList(board, "Done", FractionalIndexService.DEFAULT_GAP * 3);
+        List<TaskList> savedLists = taskListRepository.saveAll(List.of(todo, inProgress, done));
 
         Card welcomeCard = new Card();
         welcomeCard.setTitle("Welcome to TaskHive! Drag me to In Progress");
-        welcomeCard.setDescription("You can create new lists, add cards, and drag cards across columns.");
-        welcomeCard.setPosition(1000.0);
-        welcomeCard.setList(todo);
+        welcomeCard.setDescription("You can create lists, edit cards, invite collaborators, and reorder tasks in real time.");
+        welcomeCard.setPosition(FractionalIndexService.DEFAULT_GAP);
+        welcomeCard.setList(savedLists.get(0));
         cardRepository.save(welcomeCard);
 
         String token = jwtService.generateToken(user);
@@ -119,25 +126,39 @@ public class AuthController {
     }
 
     @PostMapping("/login")
-    public ResponseEntity<AuthResponse> login(@Valid @RequestBody LoginRequest request) {
+    public ResponseEntity<AuthResponse> login(
+            @Valid @RequestBody LoginRequest request,
+            HttpServletRequest httpRequest
+    ) {
         String normalizedEmail = request.email().trim().toLowerCase(Locale.ROOT);
-        User user = userRepository.findByEmail(normalizedEmail)
-                .orElseThrow(() -> new ResponseStatusException(HttpStatus.UNAUTHORIZED, "Invalid email or password"));
+        String clientIp = extractClientIp(httpRequest);
+        loginRateLimiter.checkAllowed(clientIp, normalizedEmail);
 
-        if (!passwordEncoder.matches(request.password(), user.getPasswordHash())) {
+        User user = userRepository.findByEmail(normalizedEmail).orElse(null);
+        if (user == null || !passwordEncoder.matches(request.password(), user.getPasswordHash())) {
+            loginRateLimiter.recordFailure(clientIp, normalizedEmail);
             throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, "Invalid email or password");
         }
 
+        loginRateLimiter.clear(clientIp, normalizedEmail);
         String token = jwtService.generateToken(user);
         return ResponseEntity.ok(new AuthResponse(token, toSummary(user)));
     }
 
-    private TaskList createList(Board board, String title, double position) {
+    private String extractClientIp(HttpServletRequest request) {
+        String forwarded = request.getHeader("X-Forwarded-For");
+        if (forwarded != null && !forwarded.isBlank()) {
+            return forwarded.split(",")[0].trim();
+        }
+        return request.getRemoteAddr();
+    }
+
+    private TaskList buildList(Board board, String title, double position) {
         TaskList list = new TaskList();
         list.setTitle(title);
         list.setPosition(position);
         list.setBoard(board);
-        return taskListRepository.save(list);
+        return list;
     }
 
     private UserSummary toSummary(User user) {

@@ -70,20 +70,63 @@ const DashboardPage = () => {
     const trimmed = newBoardName.trim();
     if (!trimmed || creating) return;
 
+    const tempId = `temp-${Date.now()}`;
+    const optimisticBoard = {
+      id: tempId,
+      name: trimmed,
+      slug: 'creating...',
+      avatarColor: selectedColor,
+      pending: true,
+    };
+
     setCreating(true);
     setError('');
+    setNewBoardName('');
+    setBoards((prev) => [...prev, optimisticBoard]);
+
     try {
       const created = await api.createBoard(
         token,
         { name: trimmed, avatarColor: selectedColor },
         { onUnauthorized: logout }
       );
-      setBoards((prev) => [...prev, created]);
-      setNewBoardName('');
+      setBoards((prev) => prev.map((b) => (b.id === tempId ? created : b)));
     } catch (err) {
+      setBoards((prev) => prev.filter((b) => b.id !== tempId));
+      setNewBoardName(trimmed);
       setError(err.message || 'Failed to create board');
     } finally {
       setCreating(false);
+    }
+  };
+
+  const handleRenameBoard = async (boardId, name, avatarColor) => {
+    const previous = boards;
+    setError('');
+    setBoards((prev) => prev.map((b) => (b.id === boardId ? { ...b, name } : b)));
+    try {
+      const updated = await api.updateBoard(
+        token,
+        boardId,
+        { name, avatarColor },
+        { onUnauthorized: logout }
+      );
+      setBoards((prev) => prev.map((b) => (b.id === boardId ? updated : b)));
+    } catch (err) {
+      setBoards(previous);
+      setError(err.message || 'Failed to rename board');
+    }
+  };
+
+  const handleDeleteBoard = async (boardId) => {
+    const previous = boards;
+    setError('');
+    setBoards((prev) => prev.filter((b) => b.id !== boardId));
+    try {
+      await api.deleteBoard(token, boardId, { onUnauthorized: logout });
+    } catch (err) {
+      setBoards(previous);
+      setError(err.message || 'Failed to delete board');
     }
   };
 
@@ -211,7 +254,12 @@ const DashboardPage = () => {
           ) : (
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
               {filteredBoards.map((board) => (
-                <BoardCard key={board.id} board={board} />
+                <BoardCard
+                  key={board.id}
+                  board={board}
+                  onRename={handleRenameBoard}
+                  onDelete={handleDeleteBoard}
+                />
               ))}
             </div>
           )}

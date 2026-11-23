@@ -1,5 +1,5 @@
-import React from 'react';
-import { useDraggable } from '@dnd-kit/core';
+import React, { useCallback } from 'react';
+import { useDraggable, useDroppable } from '@dnd-kit/core';
 import { CSS } from '@dnd-kit/utilities';
 import { AlignLeftIcon, GripVerticalIcon, MoveHorizontalIcon, TrashIcon } from '../ui/Icons';
 
@@ -7,6 +7,7 @@ export const KanbanCardView = ({
   card,
   isOverlay = false,
   isDragging = false,
+  isDropTarget = false,
   dragHandleProps = {},
   onSelect,
   onQuickMove,
@@ -27,6 +28,9 @@ export const KanbanCardView = ({
         isOverlay
           ? 'border-accent/70 bg-secondary shadow-2xl ring-1 ring-accent/40 cursor-grabbing'
           : 'spotlight-card border-border',
+        isDropTarget && !isDragging && !isOverlay
+          ? 'border-t-2 border-t-accent ring-1 ring-accent/40'
+          : '',
         isDragging && !isOverlay ? 'opacity-35' : 'opacity-100',
       ].join(' ')}
     >
@@ -72,12 +76,12 @@ export const KanbanCardView = ({
                   <button
                     type="button"
                     onClick={() => onQuickMove(card)}
-                    aria-label={`Move ${card.title} to another list`}
-                    title="Move card"
+                    aria-label={`Edit or move ${card.title}`}
+                    title="Edit / Move card"
                     className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] text-muted-foreground hover:text-foreground hover:bg-zinc-800 cursor-pointer transition-colors"
                   >
                     <MoveHorizontalIcon className="h-3 w-3" />
-                    <span>Move</span>
+                    <span>Edit</span>
                   </button>
                 )}
                 {onDelete && (
@@ -104,20 +108,34 @@ export const KanbanCardView = ({
 };
 
 export const KanbanCard = ({ card, onSelect, onQuickMove, onDelete }) => {
-  const { attributes, listeners, setNodeRef, transform, isDragging } = useDraggable({
+  const { attributes, listeners, setNodeRef: setDragRef, transform, isDragging } = useDraggable({
     id: card.id,
-    data: { card },
+    data: { type: 'card', card },
   });
+
+  const { setNodeRef: setDropRef, isOver } = useDroppable({
+    id: card.id,
+    data: { type: 'card', card },
+  });
+
+  const setCombinedRef = useCallback(
+    (node) => {
+      setDragRef(node);
+      setDropRef(node);
+    },
+    [setDragRef, setDropRef]
+  );
 
   const style = transform
     ? { transform: CSS.Translate.toString(transform) }
     : undefined;
 
   return (
-    <div ref={setNodeRef} style={style}>
+    <div ref={setCombinedRef} style={style}>
       <KanbanCardView
         card={card}
         isDragging={isDragging}
+        isDropTarget={isOver}
         dragHandleProps={{ ...listeners, ...attributes }}
         onSelect={onSelect}
         onQuickMove={onQuickMove}

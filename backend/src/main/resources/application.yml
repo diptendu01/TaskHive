@@ -5,6 +5,12 @@ spring:
     active: dev
   jpa:
     open-in-view: false
+    properties:
+      hibernate:
+        jdbc:
+          batch_size: 20
+        order_inserts: true
+        order_updates: true
   data:
     redis:
       repositories:
@@ -57,6 +63,9 @@ jwt:
 app:
   env: dev
   frontend-url: ${FRONTEND_URL:http://localhost:5173}
+  redis:
+    pubsub:
+      enabled: ${APP_REDIS_PUBSUB_ENABLED:false}
 
 ---
 spring:
@@ -93,3 +102,6 @@ jwt:
 app:
   env: prod
   frontend-url: ${FRONTEND_URL:http://localhost:5173}
+  redis:
+    pubsub:
+      enabled: ${APP_REDIS_PUBSUB_ENABLED:true}

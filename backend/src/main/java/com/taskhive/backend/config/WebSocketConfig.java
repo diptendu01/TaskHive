@@ -24,7 +24,10 @@ import org.springframework.web.socket.config.annotation.StompEndpointRegistry;
 import org.springframework.web.socket.config.annotation.WebSocketMessageBrokerConfigurer;
 
 import java.security.Principal;
+import java.time.Instant;
+import java.util.Date;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 
 @Configuration
@@ -32,6 +35,7 @@ import java.util.UUID;
 public class WebSocketConfig implements WebSocketMessageBrokerConfigurer {
 
     private static final String BOARD_TOPIC_PREFIX = "/topic/board/";
+    private static final String SESSION_EXP_ATTR = "jwtExpiresAt";
 
     private final JwtService jwtService;
     private final BoardRepository boardRepository;
@@ -55,8 +59,9 @@ public class WebSocketConfig implements WebSocketMessageBrokerConfigurer {
 
     @Override
     public void configureMessageBroker(MessageBrokerRegistry config) {
-        config.enableSimpleBroker("/topic");
+        config.enableSimpleBroker("/topic", "/queue");
         config.setApplicationDestinationPrefixes("/app");
+        config.setUserDestinationPrefix("/user");
     }
 
     @Override
@@ -80,7 +85,8 @@ public class WebSocketConfig implements WebSocketMessageBrokerConfigurer {
                     return message;
                 }
 
-                if (StompCommand.CONNECT.equals(accessor.getCommand())) {
+                StompCommand command = accessor.getCommand();
+                if (StompCommand.CONNECT.equals(command)) {
                     String authHeader = accessor.getFirstNativeHeader("Authorization");
                     if (authHeader == null) {
                         authHeader = accessor.getFirstNativeHeader("authorization");
@@ -104,24 +110,34 @@ public class WebSocketConfig implements WebSocketMessageBrokerConfigurer {
                     Authentication auth =
                             new UsernamePasswordAuthenticationToken(userId, null, authorities);
                     accessor.setUser(auth);
-                } else if (StompCommand.SUBSCRIBE.equals(accessor.getCommand())) {
-                    String destination = accessor.getDestination();
-                    if (destination != null && destination.startsWith(BOARD_TOPIC_PREFIX)) {
-                        UUID userId = requireAuthenticatedUserId(accessor.getUser());
-                        String rawBoardId = destination.substring(BOARD_TOPIC_PREFIX.length());
-                        UUID boardId;
-                        try {
-                            boardId = UUID.fromString(rawBoardId);
-                        } catch (IllegalArgumentException ex) {
-                            throw new MessageDeliveryException("Invalid board topic destination");
-                        }
 
-                        Board board = boardRepository.findById(boardId)
-                                .orElseThrow(() -> new MessageDeliveryException("Board not found"));
-                        boolean allowed = workspaceMemberRepository
-                                .existsByWorkspaceIdAndUserId(board.getWorkspaceId(), userId);
-                        if (!allowed) {
-                            throw new MessageDeliveryException("Forbidden board subscription");
+                    Date expiration = claims.getExpiration();
+                    Map<String, Object> sessionAttrs = accessor.getSessionAttributes();
+                    if (expiration != null && sessionAttrs != null) {
+                        sessionAttrs.put(SESSION_EXP_ATTR, expiration.toInstant());
+                    }
+                } else if (StompCommand.SUBSCRIBE.equals(command) || StompCommand.SEND.equals(command)) {
+                    requireSessionNotExpired(accessor);
+
+                    if (StompCommand.SUBSCRIBE.equals(command)) {
+                        String destination = accessor.getDestination();
+                        if (destination != null && destination.startsWith(BOARD_TOPIC_PREFIX)) {
+                            UUID userId = requireAuthenticatedUserId(accessor.getUser());
+                            String rawBoardId = destination.substring(BOARD_TOPIC_PREFIX.length());
+                            UUID boardId;
+                            try {
+                                boardId = UUID.fromString(rawBoardId);
+                            } catch (IllegalArgumentException ex) {
+                                throw new MessageDeliveryException("Invalid board topic destination");
+                            }
+
+                            Board board = boardRepository.findById(boardId)
+                                    .orElseThrow(() -> new MessageDeliveryException("Board not found"));
+                            boolean allowed = workspaceMemberRepository
+                                    .existsByWorkspaceIdAndUserId(board.getWorkspaceId(), userId);
+                            if (!allowed) {
+                                throw new MessageDeliveryException("Forbidden board subscription");
+                            }
                         }
                     }
                 }
@@ -129,6 +145,15 @@ public class WebSocketConfig implements WebSocketMessageBrokerConfigurer {
                 return message;
             }
         });
+    }
+
+    private void requireSessionNotExpired(StompHeaderAccessor accessor) {
+        Map<String, Object> sessionAttrs = accessor.getSessionAttributes();
+        if (sessionAttrs != null && sessionAttrs.get(SESSION_EXP_ATTR) instanceof Instant expiresAt) {
+            if (Instant.now().isAfter(expiresAt)) {
+                throw new MessageDeliveryException("JWT session expired. Please reconnect.");
+            }
+        }
     }
 
     private UUID requireAuthenticatedUserId(Principal principal) {

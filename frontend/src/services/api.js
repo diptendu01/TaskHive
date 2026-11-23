@@ -70,14 +70,51 @@ export const api = {
   createBoard: (token, payload, opts = {}) =>
     request('/api/v1/boards', { method: 'POST', token, body: payload, ...opts }),
 
+  updateBoard: (token, boardId, payload, opts = {}) =>
+    request(`/api/v1/boards/${boardId}`, { method: 'PATCH', token, body: payload, ...opts }),
+
+  deleteBoard: (token, boardId, opts = {}) =>
+    request(`/api/v1/boards/${boardId}`, { method: 'DELETE', token, ...opts }),
+
   getBoard: (token, boardId, opts = {}) =>
     request(`/api/v1/boards/${boardId}`, { token, ...opts }),
 
   createList: (token, boardId, payload, opts = {}) =>
     request(`/api/v1/boards/${boardId}/lists`, { method: 'POST', token, body: payload, ...opts }),
 
+  updateList: (token, boardId, listId, payload, opts = {}) =>
+    request(`/api/v1/boards/${boardId}/lists/${listId}`, {
+      method: 'PATCH',
+      token,
+      body: payload,
+      ...opts,
+    }),
+
+  reorderList: (token, boardId, listId, payload, opts = {}) =>
+    request(`/api/v1/boards/${boardId}/lists/${listId}/reorder`, {
+      method: 'PATCH',
+      token,
+      body: payload,
+      ...opts,
+    }),
+
+  deleteList: (token, boardId, listId, opts = {}) =>
+    request(`/api/v1/boards/${boardId}/lists/${listId}`, {
+      method: 'DELETE',
+      token,
+      ...opts,
+    }),
+
   createCard: (token, boardId, payload, opts = {}) =>
     request(`/api/v1/boards/${boardId}/cards`, { method: 'POST', token, body: payload, ...opts }),
+
+  updateCard: (token, boardId, cardId, payload, opts = {}) =>
+    request(`/api/v1/boards/${boardId}/cards/${cardId}`, {
+      method: 'PATCH',
+      token,
+      body: payload,
+      ...opts,
+    }),
 
   moveCard: (token, boardId, cardId, payload, opts = {}) =>
     request(`/api/v1/boards/${boardId}/cards/${cardId}/move`, {
@@ -89,6 +126,24 @@ export const api = {
 
   deleteCard: (token, boardId, cardId, opts = {}) =>
     request(`/api/v1/boards/${boardId}/cards/${cardId}`, {
+      method: 'DELETE',
+      token,
+      ...opts,
+    }),
+
+  getWorkspaceMembers: (token, workspaceId, opts = {}) =>
+    request(`/api/v1/workspaces/${workspaceId}/members`, { token, ...opts }),
+
+  inviteWorkspaceMember: (token, workspaceId, payload, opts = {}) =>
+    request(`/api/v1/workspaces/${workspaceId}/members`, {
+      method: 'POST',
+      token,
+      body: payload,
+      ...opts,
+    }),
+
+  removeWorkspaceMember: (token, workspaceId, memberId, opts = {}) =>
+    request(`/api/v1/workspaces/${workspaceId}/members/${memberId}`, {
       method: 'DELETE',
       token,
       ...opts,

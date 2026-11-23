@@ -5,6 +5,7 @@ import {
   DragOverlay,
   KeyboardSensor,
   PointerSensor,
+  closestCorners,
   useSensor,
   useSensors,
 } from '@dnd-kit/core';
@@ -15,6 +16,7 @@ import { AppHeader } from '../components/layout/AppHeader';
 import { KanbanColumn } from '../components/board/KanbanColumn';
 import { KanbanCardView } from '../components/board/KanbanCard';
 import { CardDetailModal } from '../components/board/CardDetailModal';
+import { ShareWorkspaceModal } from '../components/board/ShareWorkspaceModal';
 import { DELETE_DROP_ZONE_ID, DeleteDropZone } from '../components/board/DeleteDropZone';
 import { Button } from '../components/ui/Button';
 import { Input } from '../components/ui/Input';
@@ -36,24 +38,27 @@ function resolveWsUrl() {
 }
 
 const BoardPage = () => {
-  const { token, logout } = useAuth();
+  const { user, token, logout } = useAuth();
   const { boardId } = useParams();
 
   const [boardName, setBoardName] = useState('');
   const [boardColor, setBoardColor] = useState('#14b8a6');
+  const [workspaceId, setWorkspaceId] = useState(null);
   const [lists, setLists] = useState([]);
   const [cards, setCards] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
-  const [wsStatus, setWsStatus] = useState('connecting'); // connected | reconnecting | offline
+  const [wsStatus, setWsStatus] = useState('connecting');
   const [searchQuery, setSearchQuery] = useState('');
   const [addingList, setAddingList] = useState(false);
   const [newListTitle, setNewListTitle] = useState('');
   const [creatingList, setCreatingList] = useState(false);
   const [activeCardId, setActiveCardId] = useState(null);
   const [selectedCardId, setSelectedCardId] = useState(null);
+  const [shareOpen, setShareOpen] = useState(false);
 
   const stompClientRef = useRef(null);
+  const lastCardsSnapshotRef = useRef(null);
 
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
@@ -74,6 +79,7 @@ const BoardPage = () => {
         if (!cancelled && data) {
           setBoardName(data.name || '');
           setBoardColor(data.avatarColor || '#14b8a6');
+          setWorkspaceId(data.workspaceId || null);
           setLists(data.lists || []);
           setCards(data.cards || []);
         }
@@ -96,15 +102,38 @@ const BoardPage = () => {
       onConnect: () => {
         if (cancelled) return;
         setWsStatus('connected');
+
+        client.subscribe('/user/queue/errors', (msg) => {
+          if (msg?.type === 'card:move:error') {
+            if (lastCardsSnapshotRef.current) {
+              setCards(lastCardsSnapshotRef.current);
+              lastCardsSnapshotRef.current = null;
+            }
+            setError(msg.message || 'Failed to move card. Changes were reverted.');
+          }
+        });
+
         client.subscribe(`/topic/board/${boardId}`, (msg) => {
           const { type, data } = msg || {};
           if (type === 'card:moved' && data?.newCard) {
+            lastCardsSnapshotRef.current = null;
             setCards((prev) =>
               prev.map((c) => (c.id === data.cardId ? data.newCard : c))
             );
+          } else if (type === 'cards:rebalanced' && data?.listId && Array.isArray(data?.cards)) {
+            lastCardsSnapshotRef.current = null;
+            const rebalancedIds = new Set(data.cards.map((c) => c.id));
+            setCards((prev) => [
+              ...prev.filter((c) => c.listId !== data.listId && !rebalancedIds.has(c.id)),
+              ...data.cards,
+            ]);
           } else if (type === 'card:created' && data?.card) {
             setCards((prev) =>
               prev.some((c) => c.id === data.card.id) ? prev : [...prev, data.card]
+            );
+          } else if (type === 'card:updated' && data?.card) {
+            setCards((prev) =>
+              prev.map((c) => (c.id === data.card.id ? data.card : c))
             );
           } else if (type === 'card:deleted' && data?.cardId) {
             setCards((prev) => prev.filter((c) => c.id !== data.cardId));
@@ -113,8 +142,18 @@ const BoardPage = () => {
             setLists((prev) =>
               prev.some((l) => l.id === data.list.id) ? prev : [...prev, data.list]
             );
+          } else if (type === 'list:updated' && data?.list) {
+            setLists((prev) =>
+              prev.map((l) => (l.id === data.list.id ? data.list : l))
+            );
+          } else if (type === 'list:deleted' && data?.listId) {
+            setLists((prev) => prev.filter((l) => l.id !== data.listId));
+            setCards((prev) => prev.filter((c) => c.listId !== data.listId));
           } else if (type === 'list:reordered' && Array.isArray(data?.newLists)) {
             setLists(data.newLists);
+          } else if (type === 'board:updated' && data?.board) {
+            setBoardName(data.board.name || '');
+            if (data.board.avatarColor) setBoardColor(data.board.avatarColor);
           }
         });
       },
@@ -188,6 +227,73 @@ const BoardPage = () => {
     }
   };
 
+  const handleRenameList = useCallback(
+    async (listId, newTitle) => {
+      const previousLists = lists;
+      setError('');
+      setLists((prev) =>
+        prev.map((l) => (l.id === listId ? { ...l, title: newTitle } : l))
+      );
+      try {
+        await api.updateList(token, boardId, listId, { title: newTitle }, { onUnauthorized: logout });
+      } catch (err) {
+        setLists(previousLists);
+        setError(err.message || 'Failed to rename list');
+      }
+    },
+    [lists, token, boardId, logout]
+  );
+
+  const handleDeleteList = useCallback(
+    async (listId) => {
+      const previousLists = lists;
+      const previousCards = cards;
+      setError('');
+      setLists((prev) => prev.filter((l) => l.id !== listId));
+      setCards((prev) => prev.filter((c) => c.listId !== listId));
+      try {
+        await api.deleteList(token, boardId, listId, { onUnauthorized: logout });
+      } catch (err) {
+        setLists(previousLists);
+        setCards(previousCards);
+        setError(err.message || 'Failed to delete list');
+      }
+    },
+    [lists, cards, token, boardId, logout]
+  );
+
+  const handleMoveList = useCallback(
+    async (listId, direction) => {
+      const ordered = sortedLists;
+      const currentIdx = ordered.findIndex((l) => l.id === listId);
+      const targetIdx = currentIdx + direction;
+      if (currentIdx < 0 || targetIdx < 0 || targetIdx >= ordered.length) return;
+
+      const others = ordered.filter((l) => l.id !== listId);
+      const beforeListId = targetIdx > 0 ? others[targetIdx - 1].id : null;
+      const afterListId = targetIdx < others.length ? others[targetIdx].id : null;
+
+      const previousLists = lists;
+      setError('');
+      try {
+        const updated = await api.reorderList(
+          token,
+          boardId,
+          listId,
+          { beforeListId, afterListId },
+          { onUnauthorized: logout }
+        );
+        if (Array.isArray(updated)) {
+          setLists(updated);
+        }
+      } catch (err) {
+        setLists(previousLists);
+        setError(err.message || 'Failed to reorder list');
+      }
+    },
+    [sortedLists, lists, token, boardId, logout]
+  );
+
   const handleAddCard = useCallback(
     async (listId, title, description) => {
       setError('');
@@ -208,6 +314,28 @@ const BoardPage = () => {
     [token, boardId, logout]
   );
 
+  const handleUpdateCard = useCallback(
+    async (cardId, payload) => {
+      const previousCards = cards;
+      setError('');
+      setCards((prev) =>
+        prev.map((c) => (c.id === cardId ? { ...c, ...payload } : c))
+      );
+      try {
+        const updated = await api.updateCard(token, boardId, cardId, payload, {
+          onUnauthorized: logout,
+        });
+        setCards((prev) => prev.map((c) => (c.id === cardId ? updated : c)));
+        return true;
+      } catch (err) {
+        setCards(previousCards);
+        setError(err.message || 'Failed to update card');
+        return false;
+      }
+    },
+    [cards, token, boardId, logout]
+  );
+
   const handleDeleteCard = useCallback(
     async (cardId) => {
       const previousCards = cards;
@@ -225,34 +353,68 @@ const BoardPage = () => {
     [cards, token, boardId, logout]
   );
 
-  const moveCardToList = useCallback(
-    async (cardId, newListId) => {
+  const moveCard = useCallback(
+    async (cardId, newListId, { beforeCardId = null, afterCardId = null } = {}) => {
       const draggedCard = cards.find((c) => c.id === cardId);
-      if (!draggedCard || draggedCard.listId === newListId) return;
+      if (!draggedCard) return;
+
+      const targetOthers = cards
+        .filter((c) => c.listId === newListId && c.id !== cardId)
+        .sort((a, b) => a.position - b.position);
+
+      let insertIdx = targetOthers.length;
+      if (beforeCardId) {
+        const idx = targetOthers.findIndex((c) => c.id === beforeCardId);
+        if (idx !== -1) insertIdx = idx + 1;
+      } else if (afterCardId) {
+        const idx = targetOthers.findIndex((c) => c.id === afterCardId);
+        if (idx !== -1) insertIdx = idx;
+      }
+
+      const prevPos = insertIdx > 0 ? targetOthers[insertIdx - 1].position : null;
+      const nextPos = insertIdx < targetOthers.length ? targetOthers[insertIdx].position : null;
+
+      let optimisticPosition;
+      if (prevPos !== null && nextPos !== null) {
+        optimisticPosition = prevPos + (nextPos - prevPos) / 2.0;
+      } else if (prevPos !== null) {
+        optimisticPosition = prevPos + 1024.0;
+      } else if (nextPos !== null) {
+        optimisticPosition = nextPos / 2.0;
+      } else {
+        optimisticPosition = 1024.0;
+      }
 
       const previousCards = cards;
-      const targetCards = cards
-        .filter((c) => c.listId === newListId)
-        .sort((a, b) => a.position - b.position);
-      const newPosition =
-        targetCards.length > 0
-          ? targetCards[targetCards.length - 1].position + 1000.0
-          : 1000.0;
-
+      lastCardsSnapshotRef.current = previousCards;
+      setError('');
       setCards((prev) =>
         prev.map((c) =>
-          c.id === cardId ? { ...c, listId: newListId, position: newPosition } : c
+          c.id === cardId ? { ...c, listId: newListId, position: optimisticPosition } : c
         )
       );
 
-      const payload = { cardId, newListId, newPosition };
+      const payload = {
+        cardId,
+        newListId,
+        newPosition: optimisticPosition,
+        beforeCardId,
+        afterCardId,
+      };
       const sentViaWs = stompClientRef.current?.publish('/app/card/move', payload);
 
       if (!sentViaWs) {
         try {
-          await api.moveCard(token, boardId, cardId, payload, { onUnauthorized: logout });
+          const updated = await api.moveCard(token, boardId, cardId, payload, {
+            onUnauthorized: logout,
+          });
+          lastCardsSnapshotRef.current = null;
+          if (updated) {
+            setCards((prev) => prev.map((c) => (c.id === cardId ? updated : c)));
+          }
         } catch (err) {
           setCards(previousCards);
+          lastCardsSnapshotRef.current = null;
           setError(err.message || 'Failed to move card');
         }
       }
@@ -274,7 +436,28 @@ const BoardPage = () => {
       return;
     }
 
-    moveCardToList(active.id, over.id);
+    const overData = over.data?.current;
+    if (overData?.type === 'card' && overData.card) {
+      const targetCard = overData.card;
+      if (targetCard.id === active.id) return;
+
+      const targetOthers = cards
+        .filter((c) => c.listId === targetCard.listId && c.id !== active.id)
+        .sort((a, b) => a.position - b.position);
+      const overIdx = targetOthers.findIndex((c) => c.id === targetCard.id);
+      const beforeCardId = overIdx > 0 ? targetOthers[overIdx - 1].id : null;
+      const afterCardId = targetCard.id;
+
+      moveCard(active.id, targetCard.listId, { beforeCardId, afterCardId });
+      return;
+    }
+
+    const targetListId = overData?.type === 'list' ? over.id : over.id;
+    const targetOthers = cards
+      .filter((c) => c.listId === targetListId && c.id !== active.id)
+      .sort((a, b) => a.position - b.position);
+    const lastCardId = targetOthers.length > 0 ? targetOthers[targetOthers.length - 1].id : null;
+    moveCard(active.id, targetListId, { beforeCardId: lastCardId, afterCardId: null });
   };
 
   const statusBadge =
@@ -322,16 +505,34 @@ const BoardPage = () => {
           </div>
         }
         rightSlot={
-          <div className="relative hidden md:block w-52">
-            <SearchIcon className="h-3.5 w-3.5 text-muted-foreground absolute left-2.5 top-1/2 -translate-y-1/2 pointer-events-none" />
-            <Input
-              type="search"
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              placeholder="Filter cards..."
-              aria-label="Filter cards on this board"
-              className="h-8 pl-8 text-xs bg-surface"
-            />
+          <div className="flex items-center gap-2">
+            {workspaceId && (
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setShareOpen(true)}
+                className="h-8 text-xs"
+              >
+                <svg viewBox="0 0 24 24" className="h-3.5 w-3.5" fill="none" stroke="currentColor" strokeWidth="2">
+                  <path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2" />
+                  <circle cx="9" cy="7" r="4" />
+                  <line x1="19" y1="8" x2="19" y2="14" />
+                  <line x1="22" y1="11" x2="16" y2="11" />
+                </svg>
+                <span>Share</span>
+              </Button>
+            )}
+            <div className="relative hidden md:block w-52">
+              <SearchIcon className="h-3.5 w-3.5 text-muted-foreground absolute left-2.5 top-1/2 -translate-y-1/2 pointer-events-none" />
+              <Input
+                type="search"
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                placeholder="Filter cards..."
+                aria-label="Filter cards on this board"
+                className="h-8 pl-8 text-xs bg-surface"
+              />
+            </div>
           </div>
         }
       />
@@ -359,12 +560,13 @@ const BoardPage = () => {
         ) : (
           <DndContext
             sensors={sensors}
+            collisionDetection={closestCorners}
             onDragStart={handleDragStart}
             onDragEnd={handleDragEnd}
             onDragCancel={() => setActiveCardId(null)}
           >
             <div className="flex-1 flex items-start gap-4 overflow-x-auto pb-4">
-              {sortedLists.map((list) => {
+              {sortedLists.map((list, idx) => {
                 const listCards = filteredCards
                   .filter((c) => c.listId === list.id)
                   .sort((a, b) => a.position - b.position);
@@ -373,9 +575,14 @@ const BoardPage = () => {
                     key={list.id}
                     list={list}
                     cards={listCards}
+                    canMoveLeft={idx > 0}
+                    canMoveRight={idx < sortedLists.length - 1}
                     onAddCard={handleAddCard}
                     onSelectCard={(card) => setSelectedCardId(card.id)}
                     onDeleteCard={handleDeleteCard}
+                    onRenameList={handleRenameList}
+                    onDeleteList={handleDeleteList}
+                    onMoveList={handleMoveList}
                   />
                 );
               })}
@@ -441,8 +648,18 @@ const BoardPage = () => {
         card={selectedCard}
         lists={sortedLists}
         onClose={() => setSelectedCardId(null)}
-        onMoveToList={moveCardToList}
+        onUpdateCard={handleUpdateCard}
+        onMoveToList={(cardId, targetListId) => moveCard(cardId, targetListId)}
         onDeleteCard={handleDeleteCard}
+      />
+
+      <ShareWorkspaceModal
+        open={shareOpen}
+        workspaceId={workspaceId}
+        token={token}
+        currentUserId={user?.id}
+        onUnauthorized={logout}
+        onClose={() => setShareOpen(false)}
       />
     </div>
   );

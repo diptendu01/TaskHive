@@ -14,6 +14,7 @@ import jakarta.persistence.ManyToOne;
 import jakarta.persistence.OneToMany;
 import jakarta.persistence.PrePersist;
 import jakarta.persistence.Table;
+import jakarta.persistence.Version;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.Size;
 import lombok.AllArgsConstructor;
@@ -49,6 +50,9 @@ public class TaskList extends Auditable {
 
     @Column(name = "position", nullable = false)
     private double position;
+
+    @Version
+    private Long version;
 
     @JsonIgnore
     @ManyToOne(fetch = FetchType.LAZY, optional = false)

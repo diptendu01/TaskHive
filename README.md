@@ -1,6 +1,6 @@
 # TaskHive
 
-[![Version](https://img.shields.io/badge/version-v0.1.0-14b8a6?style=flat-square)](https://github.com/diptendu01/TaskHive)
+[![Version](https://img.shields.io/badge/version-v0.2.0-14b8a6?style=flat-square)](https://github.com/diptendu01/TaskHive)
 [![Java](https://img.shields.io/badge/Java-21%20LTS-007396?style=flat-square)](https://adoptium.net/temurin/releases)
 [![Spring Boot](https://img.shields.io/badge/Spring%20Boot-4.1.2-6DB33F?style=flat-square)](https://spring.io/projects/spring-boot)
 [![React](https://img.shields.io/badge/React-19-61DAFB?style=flat-square&logoColor=black)](https://react.dev/)
@@ -9,97 +9,61 @@
 [![GitHub Stars](https://img.shields.io/github/stars/diptendu01/TaskHive?style=flat-square)](https://github.com/diptendu01/TaskHive/stargazers)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue?style=flat-square)](https://github.com/diptendu01/TaskHive/blob/main/LICENSE)
 
-> A production-grade, real-time Kanban board inspired by Trello—built with fractional indexing, JWT-authenticated STOMP WebSockets, Spring Boot 4, and a high-contrast OLED black React UI.
+> A real-time collaborative Kanban board built with Spring Boot 4, Java 21, React 19, PostgreSQL, Redis Pub/Sub, fractional indexing, and JWT-authenticated STOMP WebSockets.
 
 [Report an Issue](https://github.com/diptendu01/TaskHive/issues) · [Request a Feature](https://github.com/diptendu01/TaskHive/issues/new)
 
 ## Features
 
-- **Real-Time Collaboration** — Native browser WebSockets using STOMP 1.2 (`@EnableWebSocketMessageBroker`) with automatic exponential-backoff reconnection so card creations, moves, and deletions sync instantly across open clients.
-- **Fractional Indexing** — O(1) drag-and-drop reordering for lists and cards without full-column database rewrites.
-- **Hardened Security** — Stateless JWT authentication (REST + STOMP `CONNECT`/`SUBSCRIBE`), BCrypt password hashing, board-ownership and same-board authorization checks, and locked-down production CORS/error handling.
-- **OLED Black UI & Accessibility** — Pure-black (`#000000`) theme with `#14B8A6` teal accents, cursor spotlight hover effects, smooth `@dnd-kit` drag-and-drop, drag-to-delete drop zone, and single-click delete/keyboard alternatives.
-- **Cloud-Ready Persistence** — PostgreSQL 16 (via Hibernate/JPA) and TLS-capable Redis 7 (ready for Upstash or local Docker).
-- **Automated Integration Tests** — JUnit 5, Mockito, and Testcontainers 2.x for isolated PostgreSQL integration testing.
+- **Real-Time Multi-User Collaboration** — Invite registered teammates by email via Workspace Members (`POST /api/v1/workspaces/{id}/members`) and sync board updates live over STOMP 1.2 WebSockets.
+- **After-Commit Redis Pub/Sub Fan-Out** — Board events are dispatched strictly after JPA transaction commit (`TransactionSynchronization.afterCommit`) through Redis Pub/Sub (`taskhive:board-events`) with automatic local STOMP fallback for dev environments.
+- **True Fractional Indexing & Auto-Rebalance** — $O(1)$ midpoint calculation (`FractionalIndexService`) for within-column and cross-column card reordering plus list reordering, with automatic column rebalancing when gaps shrink below `1e-4` and `@Version` optimistic locking for concurrent drops.
+- **WebSocket Error Rollback** — Rejected WebSocket moves send targeted `/user/queue/errors` frames so the sender's optimistic UI reverts cleanly.
+- **Hardened Security** — Stateless JWT auth on REST and STOMP `CONNECT`/`SUBSCRIBE`/`SEND` (including per-frame token expiration checks), board-ownership authorization, and Redis-backed login rate limiting (`429 Too Many Requests` after 10 failures in 15 minutes).
+- **Full CRUD & OLED Black UI** — Editable card detail modal, inline list rename/reorder/delete, optimistic board creation/rename/delete, drag-to-delete drop zone, and single-click accessibility alternatives.
+- **Unit & Testcontainers Integration Tests** — JUnit 5 tests for `FractionalIndexService` plus Testcontainers 2.x PostgreSQL integration tests covering auth, rate limiting, IDOR protection, workspace invites, fractional moves, and CRUD.
 
 ## Tech Stack
 
 | Layer | Technologies |
 | :--- | :--- |
 | **Backend** | Java 21 LTS, Spring Boot 4.1.2, Spring Security 7, Spring WebSocket (STOMP), Spring Data JPA, Spring Data Redis (Lettuce), SpringDoc OpenAPI 3.2 |
-| **Frontend** | React 19, Vite 8, Tailwind CSS 4 (`@tailwindcss/vite`), React Router, `@dnd-kit` |
-| **Data** | PostgreSQL 16, Redis 7 |
-| **Deployment** | Cloudflare Pages (Frontend), Render Docker (Backend), Neon (Postgres), Upstash (Redis), Docker Compose (Local / VPS) |
-
-## Project Structure
-
-```text
-TaskHive/
-├── backend/                 # Spring Boot 4.1.2 REST + STOMP WebSocket API (Maven, Dockerfile)
-├── frontend/                # React 19 + Vite 8 + Tailwind CSS 4 SPA
-└── docker-compose.local.yml # Local PostgreSQL + Redis + full-stack Compose setup
-```
+| **Frontend** | React 19, Vite 8, Tailwind CSS 4 (`@tailwindcss/vite`), React Router, `@dnd-kit/core` |
+| **Data & Scaling** | PostgreSQL 16 (Neon), Redis 7 Pub/Sub & Rate Limiting (Upstash) |
+| **Testing** | JUnit 5, AssertJ, Testcontainers 2.x (`testcontainers-postgresql`) |
+| **Deployment** | Cloudflare Pages (Frontend), Render Docker (Backend), Docker Compose (Local) |
 
 ## Getting Started
 
 ### Prerequisites
 
 - **Java 21 JDK** & **Apache Maven 3.9+**
-- **Node.js 22+ LTS** (or Node.js 26 LTS)
-- **Docker & Docker Compose** (optional, for containerized local run)
+- **Node.js 22+ LTS**
+- **Docker** (for Testcontainers integration tests or Docker Compose)
 
-### Quick Start (Docker Compose)
+### Run Locally
 
-```bash
-git clone https://github.com/diptendu01/TaskHive.git
-cd TaskHive
-docker compose -f docker-compose.local.yml up -d
-```
-
-- **Frontend:** `http://localhost:5173`
-- **Backend API:** `http://localhost:8080`
-- **Health Check:** `http://localhost:8080/actuator/health`
-
-### Run Locally Without Docker
-
-**1. Backend (Dev profile uses in-memory H2 in PostgreSQL mode by default):**
+**1. Backend (dev profile uses in-memory H2 in PostgreSQL mode by default):**
 
 ```bash
 cd backend
 mvn spring-boot:run -Dspring-boot.run.profiles=dev
 ```
 
-**2. Frontend:**
+**2. Run Unit & Testcontainers Integration Tests:**
+
+```bash
+cd backend
+mvn test
+```
+
+**3. Frontend:**
 
 ```bash
 cd frontend
 npm install
 npm run dev
 ```
-
-## Environment Variables (Production)
-
-### Backend (`SPRING_PROFILES_ACTIVE=prod`)
-
-| Variable | Description |
-| :--- | :--- |
-| `SPRING_DATASOURCE_URL` | JDBC PostgreSQL URL (e.g., `jdbc:postgresql://<host>/neondb?sslmode=require`) |
-| `SPRING_DATASOURCE_USERNAME` | PostgreSQL username |
-| `SPRING_DATASOURCE_PASSWORD` | PostgreSQL password |
-| `SPRING_REDIS_HOST` | Redis hostname (plain host, without `https://` or `rediss://`) |
-| `SPRING_REDIS_PORT` | Redis port (default `6379`) |
-| `SPRING_REDIS_PASSWORD` | Redis password |
-| `SPRING_DATA_REDIS_SSL_ENABLED` | Set to `true` for TLS providers such as Upstash |
-| `JWT_SECRET` | Random secret key (minimum 32 characters; 48+ recommended) |
-| `FRONTEND_URL` | Allowed frontend origin for CORS & WebSockets (no trailing slash) |
-| `PORT` | HTTP port (default `8080`; auto-injected on Render) |
-
-### Frontend (Vite Build)
-
-| Variable | Description |
-| :--- | :--- |
-| `VITE_API_URL` | Base backend URL (e.g., `https://your-backend.onrender.com`) |
-| `VITE_WS_URL` | WebSocket endpoint URL (e.g., `wss://your-backend.onrender.com/ws`) |
 
 ## License
 
