@@ -52,6 +52,7 @@ public class TaskList extends Auditable {
     private double position;
 
     @Version
+    @Column(name = "version", nullable = false, columnDefinition = "bigint default 0")
     private Long version;
 
     @JsonIgnore
